@@ -7,10 +7,16 @@ directories:
 files:
   - dist/**/*
   - dist-electron/**/*
+  - build/icon.png
   - package.json
 asarUnpack:
   - "**/node_modules/youtubei.js/**/*"
+publish:
+  - provider: github
+    owner: sadeeshasathsara
+    repo: karaokepitch-studio
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch:

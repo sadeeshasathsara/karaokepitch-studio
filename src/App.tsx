@@ -1,23 +1,38 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowDownToLine, X } from 'lucide-react';
 import { PitchAudioEngine, type PitchEngineMode } from '@/audio/pitchEngine';
 import { getPlatformAPI } from '@/services/platform';
 import {
   addRecentTrack,
-  DEFAULT_TRACK_SETTINGS,
+  getGlobalSettings,
   getRecentTracks,
-  getTrackSettings,
-  saveTrackSettings,
+  saveGlobalSettings,
 } from '@/services/storage';
-import type { DownloadProgress, KaraokeTrack, StreamBundle, TrackSettings } from '@/types/karaoke';
+import type {
+  AppUpdateState,
+  DownloadProgress,
+  KaraokeTrack,
+  StreamBundle,
+  TrackSettings,
+} from '@/types/karaoke';
 import { Sidebar, type NavTab } from '@/components/Sidebar';
 import { KARAOKE_CATEGORIES, SearchHeader, type KaraokeCategory } from '@/components/SearchHeader';
 import { TrackGrid } from '@/components/TrackGrid';
 import { StagePlayer } from '@/components/StagePlayer';
 import { DownloadsView } from '@/components/DownloadsView';
 import { MiniPlayer } from '@/components/MiniPlayer';
+import { SplashScreen } from '@/components/SplashScreen';
 
 export default function App() {
   const api = useMemo(() => getPlatformAPI(), []);
+
+  // Splash & Update state
+  const [showSplash, setShowSplash] = useState(true);
+  const [updateState, setUpdateState] = useState<AppUpdateState>({
+    status: 'idle',
+    currentVersion: api.appVersion,
+  });
+  const [dismissedUpdateBanner, setDismissedUpdateBanner] = useState(false);
 
   // Navigation & Discovery state
   const [activeTab, setActiveTab] = useState<NavTab>('discover');
@@ -38,7 +53,8 @@ export default function App() {
   const [isLoadingStream, setIsLoadingStream] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
 
-  const [settings, setSettings] = useState<TrackSettings>(DEFAULT_TRACK_SETTINGS);
+  // Global persistent settings across all karaoke songs
+  const [settings, setSettings] = useState<TrackSettings>(() => getGlobalSettings());
   const [engineMode, setEngineMode] = useState<PitchEngineMode>('direct');
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -55,6 +71,23 @@ export default function App() {
 
   const downloadedIds = useMemo(() => new Set(downloads.map((d) => d.id)), [downloads]);
 
+  // "Next to Sing" queue: current list + offline tracks, excluding the currently playing track
+  const upNextTracks = useMemo(() => {
+    const seen = new Set<string>();
+    if (activeTrack) seen.add(activeTrack.id);
+    const merged: KaraokeTrack[] = [];
+    for (const item of [...tracks, ...downloads]) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        merged.push(item);
+      }
+    }
+    return merged;
+  }, [activeTrack, downloads, tracks]);
+
+  const upNextRef = useRef<KaraokeTrack[]>(upNextTracks);
+  upNextRef.current = upNextTracks;
+
   // Compute target audio time from video time & bidirectional offset
   // Negative offsetMs = audio earlier (audioTime > videoTime)
   // Positive offsetMs = audio later (audioTime < videoTime)
@@ -64,16 +97,31 @@ export default function App() {
     return Math.max(0, raw);
   }, []);
 
-  // Load downloads & subscribe to download progress
+  // Load downloads, subscribe to download progress & auto-updates
   useEffect(() => {
     api.listDownloads().then(setDownloads).catch(() => undefined);
-    const unsub = api.onDownloadProgress((progress) => {
+    const unsubDl = api.onDownloadProgress((progress) => {
       setDownloadProgressMap((prev) => ({ ...prev, [progress.videoId]: progress }));
       if (progress.status === 'completed') {
         api.listDownloads().then(setDownloads).catch(() => undefined);
       }
     });
-    return unsub;
+    const unsubUpd = api.onUpdateState((next) => {
+      setUpdateState(next);
+      if (next.status === 'available' || next.status === 'downloaded') {
+        setDismissedUpdateBanner(false);
+      }
+    });
+    // Silent background update check shortly after launch
+    const updTimer = window.setTimeout(() => {
+      api.checkForUpdates().catch(() => undefined);
+    }, 3500);
+
+    return () => {
+      unsubDl();
+      unsubUpd();
+      window.clearTimeout(updTimer);
+    };
   }, [api]);
 
   // Dispose audio engine on unmount
@@ -117,7 +165,7 @@ export default function App() {
     runSearch(q);
   };
 
-  // Load and start a track on the Stage Player
+  // Load and start a track on the Stage Player using the user's global settings
   const loadTrackStreams = useCallback(
     async (track: KaraokeTrack) => {
       setIsLoadingStream(true);
@@ -127,22 +175,27 @@ export default function App() {
       setDuration(track.durationSec || 0);
 
       try {
-        const videoEl = videoRef.current;
         const audioEl = audioRef.current;
-        if (!videoEl || !audioEl) return;
+        if (!audioEl) return;
 
-        videoEl.pause();
         audioEl.pause();
+        videoRef.current?.pause();
 
         if (!engineRef.current) {
           engineRef.current = new PitchAudioEngine();
         }
+        // Resume AudioContext immediately inside user gesture chain
+        await engineRef.current.resume();
 
-        // Resolve YouTube streams and initialize WASM DSP engine in parallel
+        // Resolve YouTube streams and initialize DSP engine in parallel
         const [bundle, mode] = await Promise.all([
           api.getStreamBundle(track.id),
           engineRef.current.attach(audioEl),
         ]);
+
+        const videoEl = videoRef.current;
+        if (!videoEl) return;
+
         setStreamBundle(bundle);
         setEngineMode(mode);
 
@@ -151,17 +204,15 @@ export default function App() {
         videoEl.load();
         audioEl.load();
 
-        const saved = getTrackSettings(track.id);
-        setSettings(saved);
-        engineRef.current.setPitch(saved.pitchSemitones);
+        // Apply the user's current global settings across every song
+        const activeSettings = settingsRef.current;
+        engineRef.current.setPitch(activeSettings.pitchSemitones);
         engineRef.current.setVolume(isMuted ? 0 : volume);
 
-        videoEl.playbackRate = saved.tempo;
-        audioEl.playbackRate = saved.tempo;
-        // Preserve pitch when tempo changes so Pitch Shifter remains independent!
+        videoEl.playbackRate = activeSettings.tempo;
+        audioEl.playbackRate = activeSettings.tempo;
         audioEl.preservesPitch = true;
 
-        // Start as soon as first playable frame + audio buffer arrive (readyState >= 2)
         const waitReady = (el: HTMLMediaElement) =>
           new Promise<void>((resolve) => {
             if (el.readyState >= 2) {
@@ -179,8 +230,16 @@ export default function App() {
 
         await Promise.all([waitReady(videoEl), waitReady(audioEl)]);
 
+        if (Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
+          setDuration(videoEl.duration);
+        }
+
         await engineRef.current.resume();
-        const targetAudio = computeTargetAudioTime(0, saved.audioOffsetMs, audioEl.duration || 0);
+        const targetAudio = computeTargetAudioTime(
+          0,
+          activeSettings.audioOffsetMs,
+          audioEl.duration || 0
+        );
         audioEl.currentTime = targetAudio;
         videoEl.currentTime = 0;
 
@@ -203,19 +262,22 @@ export default function App() {
       }
       setActiveTrack(track);
       setRecents(addRecentTrack(track));
-      void loadTrackStreams(track);
+      // Defer one frame if StagePlayer is mounting <video> for the very first time
+      window.requestAnimationFrame(() => {
+        void loadTrackStreams(track);
+      });
     },
     [activeTrack?.id, loadTrackStreams, streamBundle, streamError]
   );
 
-  // Sync monitor: keeps <audio> tightly locked to <video> + custom audioOffsetMs
+  // Bind progress bar, sync monitor, and auto-next whenever activeTrack mounts/changes
   useEffect(() => {
     const videoEl = videoRef.current;
     const audioEl = audioRef.current;
     if (!videoEl || !audioEl) return;
 
-    const onTimeUpdate = () => {
-      setCurrentTime(videoEl.currentTime);
+    const syncUiTime = () => {
+      setCurrentTime(videoEl.currentTime || 0);
       if (Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
         setDuration(videoEl.duration);
       }
@@ -224,6 +286,10 @@ export default function App() {
     const onEnded = () => {
       setIsPlaying(false);
       audioEl.pause();
+      const nextTrack = upNextRef.current[0];
+      if (nextTrack) {
+        handlePlayTrack(nextTrack);
+      }
     };
 
     const onVideoWaiting = () => {
@@ -242,14 +308,18 @@ export default function App() {
       }
     };
 
-    videoEl.addEventListener('timeupdate', onTimeUpdate);
-    videoEl.addEventListener('loadedmetadata', onTimeUpdate);
+    videoEl.addEventListener('timeupdate', syncUiTime);
+    videoEl.addEventListener('loadedmetadata', syncUiTime);
+    videoEl.addEventListener('durationchange', syncUiTime);
     videoEl.addEventListener('ended', onEnded);
     videoEl.addEventListener('waiting', onVideoWaiting);
     videoEl.addEventListener('playing', onVideoPlaying);
 
-    // Tight drift correction loop (every 150ms while playing)
-    const driftTimer = window.setInterval(() => {
+    // Tight drift correction + smooth UI progress bar tick (every 150ms)
+    const tickTimer = window.setInterval(() => {
+      if (!videoEl.paused) {
+        syncUiTime();
+      }
       if (videoEl.paused || audioEl.paused) return;
       const target = computeTargetAudioTime(
         videoEl.currentTime,
@@ -263,14 +333,15 @@ export default function App() {
     }, 150);
 
     return () => {
-      videoEl.removeEventListener('timeupdate', onTimeUpdate);
-      videoEl.removeEventListener('loadedmetadata', onTimeUpdate);
+      videoEl.removeEventListener('timeupdate', syncUiTime);
+      videoEl.removeEventListener('loadedmetadata', syncUiTime);
+      videoEl.removeEventListener('durationchange', syncUiTime);
       videoEl.removeEventListener('ended', onEnded);
       videoEl.removeEventListener('waiting', onVideoWaiting);
       videoEl.removeEventListener('playing', onVideoPlaying);
-      window.clearInterval(driftTimer);
+      window.clearInterval(tickTimer);
     };
-  }, [computeTargetAudioTime]);
+  }, [activeTrack?.id, computeTargetAudioTime, handlePlayTrack]);
 
   const handleTogglePlay = useCallback(async () => {
     const videoEl = videoRef.current;
@@ -314,29 +385,25 @@ export default function App() {
     [computeTargetAudioTime, duration]
   );
 
-  const persistSettings = useCallback(
-    (next: TrackSettings) => {
-      setSettings(next);
-      if (activeTrack) {
-        saveTrackSettings(activeTrack.id, next);
-      }
-    },
-    [activeTrack]
-  );
+  // Persist globally so all subsequent karaoke songs keep the same settings
+  const updateGlobalSettings = useCallback((next: TrackSettings) => {
+    setSettings(next);
+    saveGlobalSettings(next);
+  }, []);
 
   const handleChangePitch = useCallback(
     (semitones: number) => {
       const clamped = Math.max(-12, Math.min(12, Math.round(semitones * 2) / 2));
       engineRef.current?.setPitch(clamped);
-      persistSettings({ ...settingsRef.current, pitchSemitones: clamped });
+      updateGlobalSettings({ ...settingsRef.current, pitchSemitones: clamped });
     },
-    [persistSettings]
+    [updateGlobalSettings]
   );
 
   const handleChangeOffset = useCallback(
     (offsetMs: number) => {
       const clamped = Math.max(-2000, Math.min(2000, Math.round(offsetMs / 5) * 5));
-      persistSettings({ ...settingsRef.current, audioOffsetMs: clamped });
+      updateGlobalSettings({ ...settingsRef.current, audioOffsetMs: clamped });
       const videoEl = videoRef.current;
       const audioEl = audioRef.current;
       if (videoEl && audioEl) {
@@ -347,27 +414,30 @@ export default function App() {
         );
       }
     },
-    [computeTargetAudioTime, persistSettings]
+    [computeTargetAudioTime, updateGlobalSettings]
   );
 
   const handleChangeTempo = useCallback(
     (tempo: number) => {
       const clamped = Math.max(0.75, Math.min(1.25, Math.round(tempo * 20) / 20));
-      persistSettings({ ...settingsRef.current, tempo: clamped });
+      updateGlobalSettings({ ...settingsRef.current, tempo: clamped });
       if (videoRef.current) videoRef.current.playbackRate = clamped;
       if (audioRef.current) {
         audioRef.current.playbackRate = clamped;
         audioRef.current.preservesPitch = true;
       }
     },
-    [persistSettings]
+    [updateGlobalSettings]
   );
 
-  const handleChangeVolume = useCallback((vol: number) => {
-    setVolume(vol);
-    if (vol > 0 && isMuted) setIsMuted(false);
-    engineRef.current?.setVolume(vol);
-  }, [isMuted]);
+  const handleChangeVolume = useCallback(
+    (vol: number) => {
+      setVolume(vol);
+      if (vol > 0 && isMuted) setIsMuted(false);
+      engineRef.current?.setVolume(vol);
+    },
+    [isMuted]
+  );
 
   const handleToggleMute = useCallback(() => {
     setIsMuted((prev) => {
@@ -433,8 +503,16 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [activeTab, activeTrack, handleChangeOffset, handleChangePitch, handleSeek, handleTogglePlay]);
 
+  const showUpdateBanner =
+    !dismissedUpdateBanner &&
+    (updateState.status === 'available' ||
+      updateState.status === 'downloading' ||
+      updateState.status === 'downloaded');
+
   return (
     <div className="h-full w-full flex bg-[#0D0E11] text-[#F4F5F7] overflow-hidden">
+      {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
+
       {/* Hidden persistent audio element routed into PitchAudioEngine */}
       <audio ref={audioRef} crossOrigin="anonymous" preload="auto" className="hidden" />
 
@@ -446,11 +524,46 @@ export default function App() {
         hasActiveTrack={Boolean(activeTrack)}
         isPlaying={isPlaying}
         recents={recents}
+        updateState={updateState}
         onPlayTrack={handlePlayTrack}
+        onCheckUpdates={() => void api.checkForUpdates()}
+        onInstallUpdate={() => void api.installUpdate()}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 min-w-0 h-full flex flex-col overflow-hidden relative">
+        {/* Sleek In-App Update Notification Banner */}
+        {showUpdateBanner && (
+          <div className="bg-amber-500/12 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between gap-3 text-[12.5px] shrink-0">
+            <div className="flex items-center gap-2 text-amber-200 min-w-0">
+              <ArrowDownToLine className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="truncate">
+                {updateState.status === 'downloaded'
+                  ? `KaraokePitch Studio v${updateState.latestVersion} is ready to install.`
+                  : updateState.status === 'downloading'
+                  ? `Downloading update v${updateState.latestVersion} (${updateState.percent ?? 0}%)...`
+                  : `New version v${updateState.latestVersion} is available.`}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => void api.installUpdate()}
+                disabled={updateState.status === 'downloading'}
+                className="px-3 py-1 rounded-md bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-[#0D0E11] font-semibold text-[12px] cursor-pointer"
+              >
+                {updateState.status === 'downloaded' ? 'Restart & Install' : 'Update Now'}
+              </button>
+              <button
+                onClick={() => setDismissedUpdateBanner(true)}
+                className="p-1 text-amber-300/70 hover:text-amber-200 cursor-pointer"
+                aria-label="Dismiss update banner"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Discover / Search View */}
         {activeTab === 'discover' && (
           <div className="h-full flex flex-col overflow-hidden">
@@ -502,6 +615,7 @@ export default function App() {
         <StagePlayer
           visible={activeTab === 'stage'}
           track={activeTrack}
+          upNextTracks={upNextTracks}
           streamBundle={streamBundle}
           isLoadingStream={isLoadingStream}
           streamError={streamError}
@@ -512,8 +626,8 @@ export default function App() {
           duration={duration}
           volume={volume}
           isMuted={isMuted}
-          isDownloaded={activeTrack ? downloadedIds.has(activeTrack.id) : false}
-          downloadProgress={activeTrack ? downloadProgressMap[activeTrack.id] : undefined}
+          downloadedIds={downloadedIds}
+          downloadProgressMap={downloadProgressMap}
           videoRef={videoRef}
           onTogglePlay={() => void handleTogglePlay()}
           onSeek={handleSeek}
@@ -522,7 +636,8 @@ export default function App() {
           onChangeTempo={handleChangeTempo}
           onChangeVolume={handleChangeVolume}
           onToggleMute={handleToggleMute}
-          onDownload={() => activeTrack && void handleDownloadTrack(activeTrack)}
+          onPlayTrack={handlePlayTrack}
+          onDownloadTrack={(t) => void handleDownloadTrack(t)}
           onRetryStream={() => activeTrack && void loadTrackStreams(activeTrack)}
           onGoDiscover={() => setActiveTab('discover')}
         />

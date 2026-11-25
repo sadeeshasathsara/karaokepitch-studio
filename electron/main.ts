@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { autoUpdater } from 'electron-updater';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { extractStreams, searchKaraokeVideos } from './youtube';
-import type { DownloadProgress, KaraokeTrack, StreamBundle } from './types';
+import type { AppUpdateState, DownloadProgress, KaraokeTrack, StreamBundle } from './types';
 
 let mainWindow: BrowserWindow | null = null;
 let proxyServer: http.Server | null = null;
@@ -236,6 +237,70 @@ function sendDownloadProgress(progress: DownloadProgress): void {
   }
 }
 
+const GITHUB_RELEASES_URL = 'https://github.com/sadeeshasathsara/karaokepitch-studio/releases/latest';
+let currentUpdateState: AppUpdateState = {
+  status: 'idle',
+  currentVersion: app.getVersion(),
+};
+
+function sendUpdateState(state: AppUpdateState): void {
+  currentUpdateState = state;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('karaoke:update:state', state);
+  }
+}
+
+function setupAutoUpdater(): void {
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () => {
+    sendUpdateState({ status: 'checking', currentVersion: app.getVersion() });
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    sendUpdateState({
+      status: 'available',
+      currentVersion: app.getVersion(),
+      latestVersion: info.version,
+      releaseUrl: GITHUB_RELEASES_URL,
+    });
+  });
+
+  autoUpdater.on('update-not-available', (info) => {
+    sendUpdateState({
+      status: 'up-to-date',
+      currentVersion: app.getVersion(),
+      latestVersion: info.version,
+    });
+  });
+
+  autoUpdater.on('download-progress', (p) => {
+    sendUpdateState({
+      status: 'downloading',
+      currentVersion: app.getVersion(),
+      latestVersion: currentUpdateState.latestVersion,
+      percent: Math.round(p.percent),
+    });
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    sendUpdateState({
+      status: 'downloaded',
+      currentVersion: app.getVersion(),
+      latestVersion: info.version,
+    });
+  });
+
+  autoUpdater.on('error', (err) => {
+    sendUpdateState({
+      status: 'error',
+      currentVersion: app.getVersion(),
+      message: err?.message || 'Update check failed',
+    });
+  });
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle('karaoke:search', async (_event, query: string) => {
     return searchKaraokeVideos(query);
@@ -360,15 +425,63 @@ function registerIpcHandlers(): void {
     writeDownloadIndex(updated);
     return true;
   });
+
+  ipcMain.handle('karaoke:update:check', async (): Promise<AppUpdateState> => {
+    if (!app.isPackaged) {
+      // Unpacked dev mode: check GitHub API directly without touching autoUpdater
+      try {
+        const res = await fetch(
+          'https://api.github.com/repos/sadeeshasathsara/karaokepitch-studio/releases/latest',
+          { headers: { Accept: 'application/vnd.github+json' } }
+        );
+        if (res.ok) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const data = (await res.json()) as any;
+          const latest = String(data.tag_name || '').replace(/^v/i, '');
+          const state: AppUpdateState =
+            latest && latest !== app.getVersion()
+              ? {
+                  status: 'available',
+                  currentVersion: app.getVersion(),
+                  latestVersion: latest,
+                  releaseUrl: data.html_url || GITHUB_RELEASES_URL,
+                }
+              : { status: 'up-to-date', currentVersion: app.getVersion(), latestVersion: latest };
+          sendUpdateState(state);
+          return state;
+        }
+      } catch {
+        // fall through
+      }
+      return currentUpdateState;
+    }
+
+    try {
+      await autoUpdater.checkForUpdates();
+    } catch {
+      // error event already emitted
+    }
+    return currentUpdateState;
+  });
+
+  ipcMain.handle('karaoke:update:install', async () => {
+    if (currentUpdateState.status === 'downloaded' && app.isPackaged) {
+      autoUpdater.quitAndInstall(false, true);
+    } else {
+      await shell.openExternal(currentUpdateState.releaseUrl || GITHUB_RELEASES_URL);
+    }
+  });
 }
 
 function createWindow(): void {
+  const iconPath = path.join(__dirname, '../build/icon.png');
   mainWindow = new BrowserWindow({
     width: 1360,
     height: 860,
     minWidth: 380,
     minHeight: 620,
     backgroundColor: '#0D0E11',
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
     titleBarStyle: 'default',
     autoHideMenuBar: true,
     webPreferences: {
@@ -389,6 +502,7 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   await startLocalMediaServer();
+  setupAutoUpdater();
   registerIpcHandlers();
   createWindow();
 

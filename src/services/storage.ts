@@ -1,6 +1,6 @@
 import type { KaraokeTrack, TrackSettings } from '@/types/karaoke';
 
-const SETTINGS_KEY = 'karaokepitch.trackSettings.v1';
+const GLOBAL_SETTINGS_KEY = 'karaokepitch.globalSettings.v1';
 const RECENTS_KEY = 'karaokepitch.recents.v1';
 
 export const DEFAULT_TRACK_SETTINGS: TrackSettings = {
@@ -19,16 +19,14 @@ function safeReadJson<T>(key: string, fallback: T): T {
   }
 }
 
-export function getTrackSettings(videoId: string): TrackSettings {
-  const map = safeReadJson<Record<string, TrackSettings>>(SETTINGS_KEY, {});
-  return { ...DEFAULT_TRACK_SETTINGS, ...(map[videoId] || {}) };
+export function getGlobalSettings(): TrackSettings {
+  const saved = safeReadJson<Partial<TrackSettings>>(GLOBAL_SETTINGS_KEY, {});
+  return { ...DEFAULT_TRACK_SETTINGS, ...saved };
 }
 
-export function saveTrackSettings(videoId: string, settings: TrackSettings): void {
-  const map = safeReadJson<Record<string, TrackSettings>>(SETTINGS_KEY, {});
-  map[videoId] = settings;
+export function saveGlobalSettings(settings: TrackSettings): void {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(map));
+    localStorage.setItem(GLOBAL_SETTINGS_KEY, JSON.stringify(settings));
   } catch {
     // ignore quota errors
   }

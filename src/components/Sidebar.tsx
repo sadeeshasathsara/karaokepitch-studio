@@ -1,6 +1,6 @@
 import React from 'react';
-import { Compass, Disc3, Download, Mic2, Clock } from 'lucide-react';
-import type { KaraokeTrack } from '@/types/karaoke';
+import { Compass, Disc3, Download, Mic2, Clock, RefreshCw, ArrowDownToLine } from 'lucide-react';
+import type { AppUpdateState, KaraokeTrack } from '@/types/karaoke';
 
 export type NavTab = 'discover' | 'stage' | 'downloads';
 
@@ -11,7 +11,10 @@ interface SidebarProps {
   hasActiveTrack: boolean;
   isPlaying: boolean;
   recents: KaraokeTrack[];
+  updateState: AppUpdateState;
   onPlayTrack: (track: KaraokeTrack) => void;
+  onCheckUpdates: () => void;
+  onInstallUpdate: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -21,14 +24,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
   hasActiveTrack,
   isPlaying,
   recents,
+  updateState,
   onPlayTrack,
+  onCheckUpdates,
+  onInstallUpdate,
 }) => {
   const navItems: { id: NavTab; label: string; icon: React.ReactNode; badge?: number | string }[] = [
     { id: 'discover', label: 'Discover', icon: <Compass className="w-[18px] h-[18px]" /> },
     {
       id: 'stage',
       label: 'Stage Player',
-      icon: <Disc3 className={`w-[18px] h-[18px] ${isPlaying ? 'animate-spin' : ''}`} style={{ animationDuration: '6s' }} />,
+      icon: (
+        <Disc3
+          className={`w-[18px] h-[18px] ${isPlaying ? 'animate-spin' : ''}`}
+          style={{ animationDuration: '6s' }}
+        />
+      ),
       badge: hasActiveTrack ? 'LIVE' : undefined,
     },
     {
@@ -38,6 +49,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badge: downloadCount > 0 ? downloadCount : undefined,
     },
   ];
+
+  const hasUpdate =
+    updateState.status === 'available' ||
+    updateState.status === 'downloading' ||
+    updateState.status === 'downloaded';
 
   return (
     <>
@@ -100,7 +116,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
           {recents.length === 0 ? (
             <p className="text-[12px] text-[#5C6370] leading-relaxed">
-              Tracks you sing will appear here with their saved pitch and sync settings.
+              Tracks you sing will appear here for quick replay.
             </p>
           ) : (
             <div className="space-y-1 pb-4">
@@ -128,10 +144,44 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
 
-        {/* Footer badge */}
-        <div className="p-3.5 border-t border-white/[0.06] text-[11px] text-[#6B7280] flex items-center justify-between">
-          <span>YouTube Karaoke Only</span>
-          <span className="font-mono-num text-[#9CA3AF]">v1.0</span>
+        {/* Footer Version & Auto-Update Action */}
+        <div className="p-3 border-t border-white/[0.06] space-y-2">
+          {hasUpdate ? (
+            <button
+              onClick={onInstallUpdate}
+              className="w-full py-2 px-2.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 text-[12px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+            >
+              <ArrowDownToLine className="w-3.5 h-3.5" />
+              <span>
+                {updateState.status === 'downloaded'
+                  ? `Restart to v${updateState.latestVersion}`
+                  : updateState.status === 'downloading'
+                  ? `Updating ${updateState.percent ?? 0}%`
+                  : `Update to v${updateState.latestVersion}`}
+              </span>
+            </button>
+          ) : (
+            <button
+              onClick={onCheckUpdates}
+              disabled={updateState.status === 'checking'}
+              className="w-full flex items-center justify-between text-[11.5px] text-[#7D8594] hover:text-[#D1D5DB] px-1 py-0.5 cursor-pointer transition-colors"
+              title="Check GitHub Releases for app updates"
+            >
+              <span className="flex items-center gap-1.5">
+                <RefreshCw
+                  className={`w-3 h-3 ${updateState.status === 'checking' ? 'animate-spin text-amber-400' : ''}`}
+                />
+                <span>
+                  {updateState.status === 'checking'
+                    ? 'Checking updates...'
+                    : updateState.status === 'up-to-date'
+                    ? 'Up to date'
+                    : 'Check for updates'}
+                </span>
+              </span>
+              <span className="font-mono-num text-[#9CA3AF]">v{updateState.currentVersion}</span>
+            </button>
+          )}
         </div>
       </aside>
 

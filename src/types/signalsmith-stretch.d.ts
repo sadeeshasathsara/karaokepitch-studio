@@ -22,6 +22,13 @@ declare module 'signalsmith-stretch' {
 
   export default function SignalsmithStretch(
     audioContext: BaseAudioContext,
-    channelOptions?: number | { numberOfInputs?: number; numberOfOutputs?: number; channelCount?: number }
+    channelOptions?:
+      | number
+      | {
+          numberOfInputs?: number;
+          numberOfOutputs?: number;
+          channelCount?: number;
+          outputChannelCount?: number[];
+        }
   ): Promise<SignalsmithStretchNode>;
 }

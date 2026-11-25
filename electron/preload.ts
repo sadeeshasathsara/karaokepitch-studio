@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { DownloadProgress, KaraokeBridgeAPI, KaraokeTrack } from './types';
+import type { AppUpdateState, DownloadProgress, KaraokeBridgeAPI, KaraokeTrack } from './types';
 
 const api: KaraokeBridgeAPI = {
   platform: 'electron',
+  appVersion: '1.1.0',
   searchKaraoke: (query: string, category?: string) =>
     ipcRenderer.invoke('karaoke:search', query, category),
   getStreamBundle: (videoId: string) =>
@@ -17,6 +18,15 @@ const api: KaraokeBridgeAPI = {
     ipcRenderer.on('karaoke:downloads:progress', listener);
     return () => {
       ipcRenderer.removeListener('karaoke:downloads:progress', listener);
+    };
+  },
+  checkForUpdates: () => ipcRenderer.invoke('karaoke:update:check'),
+  installUpdate: () => ipcRenderer.invoke('karaoke:update:install'),
+  onUpdateState: (cb: (state: AppUpdateState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: AppUpdateState) => cb(data);
+    ipcRenderer.on('karaoke:update:state', listener);
+    return () => {
+      ipcRenderer.removeListener('karaoke:update:state', listener);
     };
   },
 };

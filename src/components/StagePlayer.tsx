@@ -15,14 +15,21 @@ import {
   Cpu,
   WifiOff,
   Music,
+  SlidersHorizontal,
+  ListMusic,
+  Download,
+  CheckCircle2,
 } from 'lucide-react';
 import type { DownloadProgress, KaraokeTrack, StreamBundle, TrackSettings } from '@/types/karaoke';
 import type { PitchEngineMode } from '@/audio/pitchEngine';
 import { StudioConsole } from './StudioConsole';
 
+type StageDockTab = 'settings' | 'upnext';
+
 interface StagePlayerProps {
   visible: boolean;
   track: KaraokeTrack | null;
+  upNextTracks: KaraokeTrack[];
   streamBundle: StreamBundle | null;
   isLoadingStream: boolean;
   streamError: string | null;
@@ -33,8 +40,8 @@ interface StagePlayerProps {
   duration: number;
   volume: number;
   isMuted: boolean;
-  isDownloaded: boolean;
-  downloadProgress?: DownloadProgress;
+  downloadedIds: Set<string>;
+  downloadProgressMap: Record<string, DownloadProgress>;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   onTogglePlay: () => void;
   onSeek: (timeSec: number) => void;
@@ -43,7 +50,8 @@ interface StagePlayerProps {
   onChangeTempo: (tempo: number) => void;
   onChangeVolume: (vol: number) => void;
   onToggleMute: () => void;
-  onDownload: () => void;
+  onPlayTrack: (track: KaraokeTrack) => void;
+  onDownloadTrack: (track: KaraokeTrack) => void;
   onRetryStream: () => void;
   onGoDiscover: () => void;
 }
@@ -59,6 +67,7 @@ function formatTime(sec: number): string {
 export const StagePlayer: React.FC<StagePlayerProps> = ({
   visible,
   track,
+  upNextTracks,
   streamBundle,
   isLoadingStream,
   streamError,
@@ -69,8 +78,8 @@ export const StagePlayer: React.FC<StagePlayerProps> = ({
   duration,
   volume,
   isMuted,
-  isDownloaded,
-  downloadProgress,
+  downloadedIds,
+  downloadProgressMap,
   videoRef,
   onTogglePlay,
   onSeek,
@@ -79,13 +88,15 @@ export const StagePlayer: React.FC<StagePlayerProps> = ({
   onChangeTempo,
   onChangeVolume,
   onToggleMute,
-  onDownload,
+  onPlayTrack,
+  onDownloadTrack,
   onRetryStream,
   onGoDiscover,
 }) => {
   const stageBoxRef = useRef<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHud, setShowHud] = useState(true);
+  const [dockTab, setDockTab] = useState<StageDockTab>('settings');
   const hudTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -119,6 +130,9 @@ export const StagePlayer: React.FC<StagePlayerProps> = ({
 
   const clampPitch = (v: number) => Math.max(-12, Math.min(12, Math.round(v * 2) / 2));
   const clampOffset = (v: number) => Math.max(-2000, Math.min(2000, Math.round(v / 5) * 5));
+
+  const isDownloaded = track ? downloadedIds.has(track.id) : false;
+  const currentDownloadProgress = track ? downloadProgressMap[track.id] : undefined;
 
   return (
     <div className={visible ? 'block h-full overflow-y-auto' : 'hidden'}>
@@ -187,7 +201,9 @@ export const StagePlayer: React.FC<StagePlayerProps> = ({
             onMouseMove={bumpHud}
             onTouchStart={bumpHud}
             className={`relative rounded-xl overflow-hidden bg-black border border-white/[0.1] shadow-2xl select-none ${
-              isFullscreen ? 'w-screen h-screen rounded-none border-none flex items-center justify-center' : 'aspect-video w-full'
+              isFullscreen
+                ? 'w-screen h-screen rounded-none border-none flex items-center justify-center'
+                : 'aspect-video w-full'
             }`}
           >
             {/* Muted Video Element (Lyrics Display) */}
@@ -333,27 +349,149 @@ export const StagePlayer: React.FC<StagePlayerProps> = ({
             </div>
           </div>
 
-          {/* Pro Studio Pitch & Audio Sync Console */}
-          <StudioConsole
-            settings={settings}
-            volume={volume}
-            isMuted={isMuted}
-            isDownloaded={isDownloaded}
-            downloadProgress={downloadProgress}
-            onChangePitch={onChangePitch}
-            onChangeOffset={onChangeOffset}
-            onChangeTempo={onChangeTempo}
-            onChangeVolume={onChangeVolume}
-            onToggleMute={onToggleMute}
-            onDownload={onDownload}
-          />
+          {/* YouTube-Style Under-Video Tabs: Karaoke Settings | Next to Sing */}
+          <div className="space-y-3.5">
+            <div className="flex items-center gap-1 border-b border-white/[0.08]">
+              <button
+                onClick={() => setDockTab('settings')}
+                className={`px-4 py-2.5 text-[13.5px] font-semibold flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
+                  dockTab === 'settings'
+                    ? 'border-amber-500 text-[#F4F5F7]'
+                    : 'border-transparent text-[#8A92A0] hover:text-[#D1D5DB]'
+                }`}
+              >
+                <SlidersHorizontal className="w-4 h-4 text-amber-400" />
+                <span>Karaoke Settings</span>
+              </button>
 
-          {/* Subtle keyboard shortcut legend on desktop */}
-          <div className="hidden md:flex items-center justify-between text-[11.5px] text-[#6B7280] px-1">
-            <span>Per-song pitch and audio sync settings are automatically saved.</span>
-            <span className="font-mono-num">
-              Space: Play · ↑/↓: Pitch · [ / ]: Audio Sync · ←/→: Seek
-            </span>
+              <button
+                onClick={() => setDockTab('upnext')}
+                className={`px-4 py-2.5 text-[13.5px] font-semibold flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
+                  dockTab === 'upnext'
+                    ? 'border-amber-500 text-[#F4F5F7]'
+                    : 'border-transparent text-[#8A92A0] hover:text-[#D1D5DB]'
+                }`}
+              >
+                <ListMusic className="w-4 h-4 text-amber-400" />
+                <span>Next to Sing</span>
+                {upNextTracks.length > 0 && (
+                  <span className="font-mono-num text-[11px] px-1.5 py-0.5 rounded bg-white/[0.08] text-[#C8CDD6]">
+                    {upNextTracks.length}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {dockTab === 'settings' ? (
+              <div className="space-y-3">
+                <StudioConsole
+                  settings={settings}
+                  volume={volume}
+                  isMuted={isMuted}
+                  isDownloaded={isDownloaded}
+                  downloadProgress={currentDownloadProgress}
+                  onChangePitch={onChangePitch}
+                  onChangeOffset={onChangeOffset}
+                  onChangeTempo={onChangeTempo}
+                  onChangeVolume={onChangeVolume}
+                  onToggleMute={onToggleMute}
+                  onDownload={() => onDownloadTrack(track)}
+                />
+
+                <div className="hidden md:flex items-center justify-between text-[11.5px] text-[#6B7280] px-1">
+                  <span>Pitch, audio sync, and tempo stay active across all karaoke songs.</span>
+                  <span className="font-mono-num">
+                    Space: Play · ↑/↓: Pitch · [ / ]: Audio Sync · ←/→: Seek
+                  </span>
+                </div>
+              </div>
+            ) : (
+              /* YouTube-Style "Next to Sing" Vertical List */
+              <div className="space-y-2">
+                {upNextTracks.length === 0 ? (
+                  <div className="rounded-xl bg-[#14161B] border border-white/[0.07] p-8 text-center">
+                    <p className="text-[13.5px] text-[#9CA3AF]">
+                      Search or browse a karaoke category to populate your Next to Sing queue.
+                    </p>
+                  </div>
+                ) : (
+                  upNextTracks.map((item) => {
+                    const itemDownloaded = downloadedIds.has(item.id) || item.isOffline;
+                    const dl = downloadProgressMap[item.id];
+                    const itemDownloading = dl?.status === 'downloading';
+
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex items-center gap-3 p-2.5 rounded-xl bg-[#14161B] border border-white/[0.07] hover:border-white/[0.15] transition-colors group"
+                      >
+                        <button
+                          onClick={() => onPlayTrack(item)}
+                          className="relative w-32 sm:w-40 aspect-video rounded-lg overflow-hidden bg-[#0B0C0F] shrink-0 cursor-pointer"
+                        >
+                          <img
+                            src={item.thumbnail}
+                            alt={item.title}
+                            className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-200"
+                            loading="lazy"
+                          />
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/35 flex items-center justify-center transition-colors">
+                            <Play className="w-6 h-6 text-white fill-current opacity-0 group-hover:opacity-100 transition-opacity" />
+                          </div>
+                          <span className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/80 text-[10.5px] font-mono-num text-[#F4F5F7]">
+                            {item.durationText}
+                          </span>
+                        </button>
+
+                        <div className="min-w-0 flex-1">
+                          <button
+                            onClick={() => onPlayTrack(item)}
+                            className="text-left text-[13.5px] sm:text-[14px] font-medium text-[#F4F5F7] hover:text-amber-300 line-clamp-2 leading-snug cursor-pointer"
+                          >
+                            {item.title}
+                          </button>
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-[#7D8594]">
+                            <span className="truncate">{item.channel}</span>
+                            {item.viewsText && (
+                              <>
+                                <span>·</span>
+                                <span>{item.viewsText}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            onClick={() => !itemDownloaded && !itemDownloading && onDownloadTrack(item)}
+                            disabled={itemDownloaded || itemDownloading}
+                            title={itemDownloaded ? 'Saved offline' : 'Download for offline singing'}
+                            className={`h-9 px-2.5 rounded-lg border text-[12px] flex items-center gap-1 transition-colors ${
+                              itemDownloaded
+                                ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 cursor-default'
+                                : itemDownloading
+                                ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 cursor-wait'
+                                : 'bg-[#1B1E25] border-white/[0.08] text-[#B8BFC9] hover:text-white cursor-pointer'
+                            }`}
+                          >
+                            {itemDownloading ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span className="font-mono-num text-[11px]">{dl.percent}%</span>
+                              </>
+                            ) : itemDownloaded ? (
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                            ) : (
+                              <Download className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
