@@ -3,7 +3,7 @@ import type { AppUpdateState, DownloadProgress, KaraokeBridgeAPI, KaraokeTrack }
 
 const api: KaraokeBridgeAPI = {
   platform: 'electron',
-  appVersion: '1.1.0',
+  appVersion: '1.1.1',
   searchKaraoke: (query: string, category?: string) =>
     ipcRenderer.invoke('karaoke:search', query, category),
   getStreamBundle: (videoId: string) =>

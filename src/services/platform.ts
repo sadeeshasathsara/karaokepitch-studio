@@ -8,7 +8,7 @@ import {
   searchKaraokeAndroid,
 } from './youtubeWeb';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 const GITHUB_LATEST_RELEASE_API =
   'https://api.github.com/repos/sadeeshasathsara/karaokepitch-studio/releases/latest';
 

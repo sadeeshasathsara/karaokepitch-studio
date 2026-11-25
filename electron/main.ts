@@ -3,7 +3,7 @@ import { autoUpdater } from 'electron-updater';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { extractStreams, searchKaraokeVideos } from './youtube';
+import { extractStreams, getYouTubeClient, searchKaraokeVideos } from './youtube';
 import type { AppUpdateState, DownloadProgress, KaraokeTrack, StreamBundle } from './types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -21,7 +21,10 @@ interface CachedChunk {
   body: Buffer;
 }
 
-const CHUNK_SIZE = 1536 * 1024; // 1.5 MB bounded chunk avoids YouTube open-ended Range throttling
+// First chunk is tiny so the first video frame / audio arrives fast; later chunks are larger
+function chunkSizeFor(start: number): number {
+  return start === 0 ? 192 * 1024 : 640 * 1024;
+}
 const MAX_CACHE_BYTES = 24 * 1024 * 1024; // 24 MB RAM cache for instant dual-element A/V sync & seeking
 const chunkCache = new Map<string, CachedChunk>();
 const inflightChunks = new Map<string, Promise<CachedChunk>>();
@@ -42,6 +45,40 @@ function putChunkCache(key: string, chunk: CachedChunk): void {
 
 const YT_STREAM_USER_AGENT =
   'com.google.android.youtube/19.29.37 (Linux; U; Android 11) gzip';
+
+// Fetch one bounded chunk with RAM cache + in-flight de-duplication
+function getChunk(token: string, targetUrl: string, rangeHeader: string): Promise<CachedChunk> {
+  const cacheKey = `${token}:${rangeHeader}`;
+  const cached = chunkCache.get(cacheKey);
+  if (cached) return Promise.resolve(cached);
+
+  let pending = inflightChunks.get(cacheKey);
+  if (!pending) {
+    pending = (async () => {
+      const upstream = await fetch(targetUrl, {
+        headers: { 'User-Agent': YT_STREAM_USER_AGENT, Range: rangeHeader },
+      });
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      const result: CachedChunk = {
+        status: upstream.status,
+        contentType: upstream.headers.get('content-type') || 'application/octet-stream',
+        contentRange: upstream.headers.get('content-range'),
+        body: buf,
+      };
+      if (upstream.ok || upstream.status === 206) {
+        putChunkCache(cacheKey, result);
+      }
+      return result;
+    })();
+    inflightChunks.set(cacheKey, pending);
+    const p = pending;
+    void p.then(
+      () => inflightChunks.delete(cacheKey),
+      () => inflightChunks.delete(cacheKey)
+    );
+  }
+  return pending;
+}
 
 function getDownloadsDir(): string {
   const dir = path.join(app.getPath('userData'), 'downloads');
@@ -157,43 +194,25 @@ function startLocalMediaServer(): Promise<number> {
         }
 
         try {
-          // Clamp open-ended Range requests (e.g. bytes=0-) to 1.5MB bounded chunks so YouTube doesn't throttle
+          // Clamp open-ended Range requests to small chunks: tiny first chunk = fast first frame
           let rangeHeader = req.headers.range || 'bytes=0-';
           const openRangeMatch = /^bytes=(\d+)-$/.exec(rangeHeader);
           if (openRangeMatch) {
             const start = parseInt(openRangeMatch[1], 10);
-            rangeHeader = `bytes=${start}-${start + CHUNK_SIZE - 1}`;
+            rangeHeader = `bytes=${start}-${start + chunkSizeFor(start) - 1}`;
           }
 
-          const cacheKey = `${token}:${rangeHeader}`;
-          let chunk = chunkCache.get(cacheKey);
+          const chunk = await getChunk(token, targetUrl, rangeHeader);
 
-          if (!chunk) {
-            let pending = inflightChunks.get(cacheKey);
-            if (!pending) {
-              pending = (async () => {
-                const upstream = await fetch(targetUrl, {
-                  headers: {
-                    'User-Agent': YT_STREAM_USER_AGENT,
-                    Range: rangeHeader,
-                  },
-                });
-                const buf = Buffer.from(await upstream.arrayBuffer());
-                const result: CachedChunk = {
-                  status: upstream.status,
-                  contentType: upstream.headers.get('content-type') || 'application/octet-stream',
-                  contentRange: upstream.headers.get('content-range'),
-                  body: buf,
-                };
-                if (upstream.ok || upstream.status === 206) {
-                  putChunkCache(cacheKey, result);
-                }
-                return result;
-              })();
-              inflightChunks.set(cacheKey, pending);
-              pending.finally(() => inflightChunks.delete(cacheKey));
+          // Read-ahead: warm the next chunk while the player consumes this one
+          const rm = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+          const total = chunk.contentRange ? Number(/\/(\d+)$/.exec(chunk.contentRange)?.[1]) : 0;
+          if (rm && total) {
+            const nextStart = parseInt(rm[2], 10) + 1;
+            if (nextStart < total) {
+              const nextEnd = Math.min(total - 1, nextStart + chunkSizeFor(nextStart) - 1);
+              void getChunk(token, targetUrl, `bytes=${nextStart}-${nextEnd}`).catch(() => undefined);
             }
-            chunk = await pending;
           }
 
           const responseHeaders: Record<string, string | number> = {
@@ -303,7 +322,10 @@ function setupAutoUpdater(): void {
 
 function registerIpcHandlers(): void {
   ipcMain.handle('karaoke:search', async (_event, query: string) => {
-    return searchKaraokeVideos(query);
+    const results = await searchKaraokeVideos(query);
+    // Pre-resolve stream URLs for top results so clicking a song starts almost instantly
+    void Promise.allSettled(results.slice(0, 4).map((t) => extractStreams(t.id)));
+    return results;
   });
 
   ipcMain.handle('karaoke:streams', async (_event, videoId: string): Promise<StreamBundle> => {
@@ -505,6 +527,8 @@ app.whenReady().then(async () => {
   setupAutoUpdater();
   registerIpcHandlers();
   createWindow();
+  // Warm the YouTube client in the background (saves ~1s on first search/play)
+  void getYouTubeClient().catch(() => undefined);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
