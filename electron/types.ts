@@ -50,4 +50,5 @@ export interface KaraokeBridgeAPI {
   checkForUpdates: () => Promise<AppUpdateState>;
   installUpdate: () => Promise<void>;
   onUpdateState: (cb: (state: AppUpdateState) => void) => () => void;
+  onPrepareProgress?: (cb: (videoId: string, percent: number | null) => void) => () => void;
 }

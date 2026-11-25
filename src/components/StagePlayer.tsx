@@ -32,6 +32,7 @@ interface StagePlayerProps {
   upNextTracks: KaraokeTrack[];
   streamBundle: StreamBundle | null;
   isLoadingStream: boolean;
+  prepareProgress?: number | null;
   streamError: string | null;
   settings: TrackSettings;
   engineMode: PitchEngineMode;
@@ -70,6 +71,7 @@ export const StagePlayer: React.FC<StagePlayerProps> = ({
   upNextTracks,
   streamBundle,
   isLoadingStream,
+  prepareProgress,
   streamError,
   settings,
   engineMode,
@@ -221,8 +223,18 @@ export const StagePlayer: React.FC<StagePlayerProps> = ({
               <div className="absolute inset-0 bg-black/70 backdrop-blur-xs flex flex-col items-center justify-center gap-2.5 z-20">
                 <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
                 <span className="text-[13px] text-[#D1D5DB] font-medium">
-                  Loading high-quality karaoke stream...
+                  {prepareProgress != null
+                    ? `Preparing audio for pitch control... ${prepareProgress}%`
+                    : 'Loading high-quality karaoke stream...'}
                 </span>
+                {prepareProgress != null && (
+                  <div className="w-44 h-[3px] rounded-full bg-white/[0.12] overflow-hidden">
+                    <div
+                      className="h-full bg-amber-500 transition-[width] duration-200"
+                      style={{ width: `${prepareProgress}%` }}
+                    />
+                  </div>
+                )}
               </div>
             )}
 

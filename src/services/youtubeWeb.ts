@@ -162,6 +162,64 @@ export async function getStreamBundleAndroid(videoId: string): Promise<StreamBun
     }
   }
 
+  const remote = await resolveRemoteStreams(cleanId);
+
+  // Android WebView cannot run Web Audio on YouTube's cross-origin stream (it comes out silent),
+  // so download the (small) audio track into the app cache first, then pitch-shift the local file.
+  // The video stays a muted remote stream just for the lyrics.
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const audioSource = remote.audioUrl && remote.audioExt ? remote : null;
+      if (audioSource && audioSource.audioUrl) {
+        const localAudio = await ensureCachedFile(cleanId, audioSource.audioUrl, audioSource.audioExt as string);
+        return {
+          videoId: cleanId,
+          videoUrl: remote.videoUrl,
+          audioUrl: localAudio,
+          muxedUrl: remote.muxedUrl,
+          qualityLabel: remote.qualityLabel,
+          audioBitrateKbps: remote.audioBitrateKbps,
+          isOffline: false,
+        };
+      }
+      if (remote.muxedUrl) {
+        // No separate audio track available: cache the muxed file and use it for both
+        const localMuxed = await ensureCachedFile(cleanId, remote.muxedUrl, 'mp4');
+        return {
+          videoId: cleanId,
+          videoUrl: localMuxed,
+          audioUrl: localMuxed,
+          muxedUrl: localMuxed,
+          qualityLabel: remote.qualityLabel,
+          isOffline: false,
+        };
+      }
+    } catch (err) {
+      console.warn('[Android] audio cache failed, falling back to direct stream:', err);
+    }
+  }
+
+  return {
+    videoId: cleanId,
+    videoUrl: remote.videoUrl,
+    audioUrl: remote.audioUrl || remote.videoUrl,
+    muxedUrl: remote.muxedUrl,
+    qualityLabel: remote.qualityLabel,
+    audioBitrateKbps: remote.audioBitrateKbps,
+    isOffline: false,
+  };
+}
+
+interface RemoteStreams {
+  videoUrl: string;
+  audioUrl: string | null; // separate audio-only track (null if only muxed is available)
+  audioExt: string | null;
+  muxedUrl?: string;
+  qualityLabel: string;
+  audioBitrateKbps?: number;
+}
+
+async function resolveRemoteStreams(cleanId: string): Promise<RemoteStreams> {
   const yt = await getWebInnertube();
   const info = await yt.getBasicInfo(cleanId, { client: 'ANDROID' }).catch(() => yt.getBasicInfo(cleanId));
   const streaming = info.streaming_data;
@@ -192,42 +250,112 @@ export async function getStreamBundleAndroid(videoId: string): Promise<StreamBun
     .filter((f) => f.has_video && f.has_audio)
     .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
 
-  const bestAudio = adaptive
-    .filter((f) => f.has_audio && !f.has_video)
+  // Prefer AAC (audio/mp4): best WebView support and small (~3-4 MB per song)
+  const audioOnly = adaptive.filter((f) => f.has_audio && !f.has_video);
+  const mp4Audio = audioOnly
+    .filter((f) => String(f.mime_type || '').includes('audio/mp4'))
     .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+  const bestAudio = mp4Audio || audioOnly.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+  const audioExt = bestAudio ? (String(bestAudio.mime_type || '').includes('audio/mp4') ? 'm4a' : 'webm') : null;
 
   const bestVideo = adaptive
     .filter((f) => f.has_video && !f.has_audio && (f.height || 0) <= 720)
     .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
 
-  const muxedUrl = await resolveUrl(bestMuxed);
+  const muxedUrl = (await resolveUrl(bestMuxed)) || undefined;
   const audioUrl = await resolveUrl(bestAudio);
   const videoUrl = await resolveUrl(bestVideo);
 
   if (videoUrl && audioUrl) {
     return {
-      videoId: cleanId,
       videoUrl,
       audioUrl,
-      muxedUrl: muxedUrl || undefined,
+      audioExt,
+      muxedUrl,
       qualityLabel: bestVideo?.quality_label || `${bestVideo?.height || 720}p`,
       audioBitrateKbps: bestAudio?.bitrate ? Math.round(bestAudio.bitrate / 1000) : 128,
-      isOffline: false,
     };
   }
 
   if (muxedUrl) {
     return {
-      videoId: cleanId,
       videoUrl: muxedUrl,
-      audioUrl: muxedUrl,
+      audioUrl: audioUrl,
+      audioExt: audioUrl ? audioExt : null,
       muxedUrl,
       qualityLabel: bestMuxed?.quality_label || '360p',
-      isOffline: false,
     };
   }
 
   throw new Error('Unable to resolve playable karaoke streams.');
+}
+
+// --- Android: "Preparing audio" cache (download first, then pitch-shift the local file) ---
+
+const prepareListeners = new Set<(videoId: string, percent: number | null) => void>();
+
+export function onPrepareProgress(cb: (videoId: string, percent: number | null) => void): () => void {
+  prepareListeners.add(cb);
+  return () => {
+    prepareListeners.delete(cb);
+  };
+}
+
+function emitPrepare(videoId: string, percent: number | null) {
+  prepareListeners.forEach((cb) => cb(videoId, percent));
+}
+
+const YT_ANDROID_UA = 'com.google.android.youtube/19.29.37 (Linux; U; Android 11) gzip';
+
+async function ensureCachedFile(cleanId: string, url: string, ext: string): Promise<string> {
+  const finalPath = `audiocache/${cleanId}.${ext}`;
+  const partPath = `audiocache/${cleanId}.${ext}.part`;
+
+  // Reuse a previously cached file (instant replays)
+  try {
+    await Filesystem.stat({ path: finalPath, directory: Directory.Cache });
+    const uri = await Filesystem.getUri({ path: finalPath, directory: Directory.Cache });
+    emitPrepare(cleanId, null);
+    return Capacitor.convertFileSrc(uri.uri);
+  } catch {
+    // not cached yet
+  }
+
+  await Filesystem.mkdir({ path: 'audiocache', directory: Directory.Cache, recursive: true }).catch(() => undefined);
+
+  emitPrepare(cleanId, 0);
+  const listener = await Filesystem.addListener('progress', (evt) => {
+    if (evt.url === url && evt.contentLength > 0) {
+      emitPrepare(cleanId, Math.min(99, Math.round((evt.bytes / evt.contentLength) * 100)));
+    }
+  });
+
+  try {
+    await Filesystem.downloadFile({
+      url,
+      path: partPath,
+      directory: Directory.Cache,
+      recursive: true,
+      progress: true,
+      headers: { 'User-Agent': YT_ANDROID_UA },
+    });
+    await Filesystem.rename({
+      from: partPath,
+      to: finalPath,
+      directory: Directory.Cache,
+      toDirectory: Directory.Cache,
+    });
+  } catch (err) {
+    await Filesystem.deleteFile({ path: partPath, directory: Directory.Cache }).catch(() => undefined);
+    emitPrepare(cleanId, null);
+    throw err;
+  } finally {
+    await listener.remove();
+  }
+
+  emitPrepare(cleanId, null);
+  const uri = await Filesystem.getUri({ path: finalPath, directory: Directory.Cache });
+  return Capacitor.convertFileSrc(uri.uri);
 }
 
 export async function downloadTrackAndroid(
@@ -241,7 +369,7 @@ export async function downloadTrackAndroid(
 
   try {
     onProgress({ videoId: cleanId, percent: 5, status: 'downloading' });
-    const bundle = await getStreamBundleAndroid(cleanId);
+    const bundle = await resolveRemoteStreams(cleanId);
     const targetUrl = bundle.muxedUrl || bundle.videoUrl;
 
     await Filesystem.mkdir({

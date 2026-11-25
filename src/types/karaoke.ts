@@ -56,6 +56,8 @@ export interface KaraokeBridgeAPI {
   checkForUpdates: () => Promise<AppUpdateState>;
   installUpdate: () => Promise<void>;
   onUpdateState: (cb: (state: AppUpdateState) => void) => () => void;
+  /** Android only: progress (0-100, or null when done) while the audio track is prepared for pitch shifting */
+  onPrepareProgress?: (cb: (videoId: string, percent: number | null) => void) => () => void;
 }
 
 declare global {

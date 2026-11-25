@@ -52,6 +52,7 @@ export default function App() {
   const [streamBundle, setStreamBundle] = useState<StreamBundle | null>(null);
   const [isLoadingStream, setIsLoadingStream] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [prepPercent, setPrepPercent] = useState<number | null>(null);
 
   // Global persistent settings across all karaoke songs
   const [settings, setSettings] = useState<TrackSettings>(() => getGlobalSettings());
@@ -112,6 +113,7 @@ export default function App() {
         setDismissedUpdateBanner(false);
       }
     });
+    const unsubPrep = api.onPrepareProgress?.((_id, percent) => setPrepPercent(percent));
     // Silent background update check shortly after launch
     const updTimer = window.setTimeout(() => {
       api.checkForUpdates().catch(() => undefined);
@@ -120,6 +122,7 @@ export default function App() {
     return () => {
       unsubDl();
       unsubUpd();
+      unsubPrep?.();
       window.clearTimeout(updTimer);
     };
   }, [api]);
@@ -618,6 +621,7 @@ export default function App() {
           upNextTracks={upNextTracks}
           streamBundle={streamBundle}
           isLoadingStream={isLoadingStream}
+          prepareProgress={prepPercent}
           streamError={streamError}
           settings={settings}
           engineMode={engineMode}
