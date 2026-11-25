@@ -2,6 +2,7 @@ import { Innertube, UniversalCache } from 'youtubei.js';
 import type { KaraokeTrack } from './types';
 
 let ytInstance: Innertube | null = null;
+const streamCache = new Map<string, { data: ExtractedStreams; expiresAt: number }>();
 
 const KARAOKE_KEYWORDS = [
   'karaoke',
@@ -131,6 +132,11 @@ export interface ExtractedStreams {
 }
 
 export async function extractStreams(videoId: string): Promise<ExtractedStreams> {
+  const cached = streamCache.get(videoId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
   const yt = await getYouTubeClient();
   const info = await yt.getBasicInfo(videoId, { client: 'ANDROID' }).catch(() => yt.getBasicInfo(videoId));
 
@@ -201,7 +207,7 @@ export async function extractStreams(videoId: string): Promise<ExtractedStreams>
   const adaptiveVideoUrl = await resolveUrl(bestVideo);
 
   if (adaptiveAudioUrl && adaptiveVideoUrl) {
-    return {
+    const result: ExtractedStreams = {
       videoId,
       videoUrl: adaptiveVideoUrl,
       audioUrl: adaptiveAudioUrl,
@@ -209,10 +215,12 @@ export async function extractStreams(videoId: string): Promise<ExtractedStreams>
       qualityLabel: bestVideo?.quality_label || `${bestVideo?.height || 720}p`,
       audioBitrateKbps: bestAudio?.bitrate ? Math.round(bestAudio.bitrate / 1000) : 128,
     };
+    streamCache.set(videoId, { data: result, expiresAt: Date.now() + 10 * 60 * 1000 });
+    return result;
   }
 
   if (muxedUrl) {
-    return {
+    const result: ExtractedStreams = {
       videoId,
       videoUrl: muxedUrl,
       audioUrl: muxedUrl,
@@ -220,6 +228,8 @@ export async function extractStreams(videoId: string): Promise<ExtractedStreams>
       qualityLabel: bestMuxed?.quality_label || `${bestMuxed?.height || 360}p`,
       audioBitrateKbps: bestMuxed?.bitrate ? Math.round(bestMuxed.bitrate / 1000) : 96,
     };
+    streamCache.set(videoId, { data: result, expiresAt: Date.now() + 10 * 60 * 1000 });
+    return result;
   }
 
   throw new Error('Could not resolve playable karaoke streams for this video.');

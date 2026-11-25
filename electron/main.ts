@@ -2,7 +2,6 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Readable } from 'node:stream';
 import { extractStreams, searchKaraokeVideos } from './youtube';
 import type { DownloadProgress, KaraokeTrack, StreamBundle } from './types';
 
@@ -10,8 +9,38 @@ let mainWindow: BrowserWindow | null = null;
 let proxyServer: http.Server | null = null;
 let proxyPort = 0;
 
-// In-memory token -> remote stream URL map so the renderer never leaks raw signed URLs
+// In-memory token -> remote stream URL map (and reverse lookup so identical audio/video URLs share one token)
 const streamUrlMap = new Map<string, string>();
+const reverseUrlMap = new Map<string, string>();
+
+interface CachedChunk {
+  status: number;
+  contentType: string;
+  contentRange: string | null;
+  body: Buffer;
+}
+
+const CHUNK_SIZE = 1536 * 1024; // 1.5 MB bounded chunk avoids YouTube open-ended Range throttling
+const MAX_CACHE_BYTES = 24 * 1024 * 1024; // 24 MB RAM cache for instant dual-element A/V sync & seeking
+const chunkCache = new Map<string, CachedChunk>();
+const inflightChunks = new Map<string, Promise<CachedChunk>>();
+let currentCacheBytes = 0;
+
+function putChunkCache(key: string, chunk: CachedChunk): void {
+  if (chunkCache.has(key)) return;
+  chunkCache.set(key, chunk);
+  currentCacheBytes += chunk.body.byteLength;
+  while (currentCacheBytes > MAX_CACHE_BYTES && chunkCache.size > 0) {
+    const oldestKey = chunkCache.keys().next().value;
+    if (!oldestKey) break;
+    const evicted = chunkCache.get(oldestKey);
+    chunkCache.delete(oldestKey);
+    if (evicted) currentCacheBytes -= evicted.body.byteLength;
+  }
+}
+
+const YT_STREAM_USER_AGENT =
+  'com.google.android.youtube/19.29.37 (Linux; U; Android 11) gzip';
 
 function getDownloadsDir(): string {
   const dir = path.join(app.getPath('userData'), 'downloads');
@@ -41,12 +70,22 @@ function writeDownloadIndex(tracks: KaraokeTrack[]): void {
 }
 
 function registerProxiedUrl(remoteUrl: string): string {
+  const existingToken = reverseUrlMap.get(remoteUrl);
+  if (existingToken && streamUrlMap.has(existingToken)) {
+    return `http://127.0.0.1:${proxyPort}/proxy/${existingToken}`;
+  }
+
   const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   streamUrlMap.set(token, remoteUrl);
+  reverseUrlMap.set(remoteUrl, token);
   // Keep map bounded
   if (streamUrlMap.size > 120) {
     const firstKey = streamUrlMap.keys().next().value;
-    if (firstKey) streamUrlMap.delete(firstKey);
+    if (firstKey) {
+      const oldUrl = streamUrlMap.get(firstKey);
+      streamUrlMap.delete(firstKey);
+      if (oldUrl) reverseUrlMap.delete(oldUrl);
+    }
   }
   return `http://127.0.0.1:${proxyPort}/proxy/${token}`;
 }
@@ -106,7 +145,7 @@ function startLocalMediaServer(): Promise<number> {
         return;
       }
 
-      // 2. Proxied remote YouTube stream with Range forwarding
+      // 2. Proxied remote YouTube stream with bounded Range clamping + RAM deduplication cache
       if (urlPath.startsWith('/proxy/')) {
         const token = urlPath.slice('/proxy/'.length);
         const targetUrl = streamUrlMap.get(token);
@@ -117,41 +156,56 @@ function startLocalMediaServer(): Promise<number> {
         }
 
         try {
-          const headers: Record<string, string> = {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          };
-          if (req.headers.range) {
-            headers['Range'] = req.headers.range;
+          // Clamp open-ended Range requests (e.g. bytes=0-) to 1.5MB bounded chunks so YouTube doesn't throttle
+          let rangeHeader = req.headers.range || 'bytes=0-';
+          const openRangeMatch = /^bytes=(\d+)-$/.exec(rangeHeader);
+          if (openRangeMatch) {
+            const start = parseInt(openRangeMatch[1], 10);
+            rangeHeader = `bytes=${start}-${start + CHUNK_SIZE - 1}`;
           }
 
-          const upstream = await fetch(targetUrl, { headers });
-          const responseHeaders: Record<string, string> = {
-            'Content-Type': upstream.headers.get('content-type') || 'application/octet-stream',
-            'Accept-Ranges': upstream.headers.get('accept-ranges') || 'bytes',
-          };
-          const contentLength = upstream.headers.get('content-length');
-          if (contentLength) responseHeaders['Content-Length'] = contentLength;
-          const contentRange = upstream.headers.get('content-range');
-          if (contentRange) responseHeaders['Content-Range'] = contentRange;
+          const cacheKey = `${token}:${rangeHeader}`;
+          let chunk = chunkCache.get(cacheKey);
 
-          res.writeHead(upstream.status, responseHeaders);
-
-          if (!upstream.body) {
-            res.end();
-            return;
+          if (!chunk) {
+            let pending = inflightChunks.get(cacheKey);
+            if (!pending) {
+              pending = (async () => {
+                const upstream = await fetch(targetUrl, {
+                  headers: {
+                    'User-Agent': YT_STREAM_USER_AGENT,
+                    Range: rangeHeader,
+                  },
+                });
+                const buf = Buffer.from(await upstream.arrayBuffer());
+                const result: CachedChunk = {
+                  status: upstream.status,
+                  contentType: upstream.headers.get('content-type') || 'application/octet-stream',
+                  contentRange: upstream.headers.get('content-range'),
+                  body: buf,
+                };
+                if (upstream.ok || upstream.status === 206) {
+                  putChunkCache(cacheKey, result);
+                }
+                return result;
+              })();
+              inflightChunks.set(cacheKey, pending);
+              pending.finally(() => inflightChunks.delete(cacheKey));
+            }
+            chunk = await pending;
           }
 
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const nodeStream = Readable.fromWeb(upstream.body as any);
-          nodeStream.on('error', () => {
-            if (!res.headersSent) res.writeHead(502);
-            res.end();
-          });
-          req.on('close', () => {
-            nodeStream.destroy();
-          });
-          nodeStream.pipe(res);
+          const responseHeaders: Record<string, string | number> = {
+            'Content-Type': chunk.contentType,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': chunk.body.byteLength,
+          };
+          if (chunk.contentRange) {
+            responseHeaders['Content-Range'] = chunk.contentRange;
+          }
+
+          res.writeHead(chunk.status, responseHeaders);
+          res.end(chunk.body);
         } catch (err) {
           if (!res.headersSent) res.writeHead(502);
           res.end(`Proxy error: ${err instanceof Error ? err.message : 'unknown'}`);

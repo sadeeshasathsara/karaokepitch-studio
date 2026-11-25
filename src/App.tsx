@@ -127,9 +127,6 @@ export default function App() {
       setDuration(track.durationSec || 0);
 
       try {
-        const bundle = await api.getStreamBundle(track.id);
-        setStreamBundle(bundle);
-
         const videoEl = videoRef.current;
         const audioEl = audioRef.current;
         if (!videoEl || !audioEl) return;
@@ -137,17 +134,22 @@ export default function App() {
         videoEl.pause();
         audioEl.pause();
 
+        if (!engineRef.current) {
+          engineRef.current = new PitchAudioEngine();
+        }
+
+        // Resolve YouTube streams and initialize WASM DSP engine in parallel
+        const [bundle, mode] = await Promise.all([
+          api.getStreamBundle(track.id),
+          engineRef.current.attach(audioEl),
+        ]);
+        setStreamBundle(bundle);
+        setEngineMode(mode);
+
         videoEl.src = bundle.videoUrl;
         audioEl.src = bundle.audioUrl;
         videoEl.load();
         audioEl.load();
-
-        // Initialize or reuse real-time PitchAudioEngine on the audio element
-        if (!engineRef.current) {
-          engineRef.current = new PitchAudioEngine();
-        }
-        const mode = await engineRef.current.attach(audioEl);
-        setEngineMode(mode);
 
         const saved = getTrackSettings(track.id);
         setSettings(saved);
@@ -159,25 +161,23 @@ export default function App() {
         // Preserve pitch when tempo changes so Pitch Shifter remains independent!
         audioEl.preservesPitch = true;
 
-        // Wait until both media elements can play, then start in sync
-        await Promise.all([
+        // Start as soon as first playable frame + audio buffer arrive (readyState >= 2)
+        const waitReady = (el: HTMLMediaElement) =>
           new Promise<void>((resolve) => {
+            if (el.readyState >= 2) {
+              resolve();
+              return;
+            }
             const done = () => {
-              videoEl.removeEventListener('canplay', done);
+              el.removeEventListener('loadeddata', done);
+              el.removeEventListener('canplay', done);
               resolve();
             };
-            if (videoEl.readyState >= 3) resolve();
-            else videoEl.addEventListener('canplay', done, { once: true });
-          }),
-          new Promise<void>((resolve) => {
-            const done = () => {
-              audioEl.removeEventListener('canplay', done);
-              resolve();
-            };
-            if (audioEl.readyState >= 3) resolve();
-            else audioEl.addEventListener('canplay', done, { once: true });
-          }),
-        ]);
+            el.addEventListener('loadeddata', done, { once: true });
+            el.addEventListener('canplay', done, { once: true });
+          });
+
+        await Promise.all([waitReady(videoEl), waitReady(audioEl)]);
 
         await engineRef.current.resume();
         const targetAudio = computeTargetAudioTime(0, saved.audioOffsetMs, audioEl.duration || 0);
