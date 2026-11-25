@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">KaraokePitch Studio</string>
+    <string name="title_activity_main">KaraokePitch Studio</string>
+    <string name="package_name">com.karaokepitch.studio</string>
+    <string name="custom_url_scheme">com.karaokepitch.studio</string>
+</resources>

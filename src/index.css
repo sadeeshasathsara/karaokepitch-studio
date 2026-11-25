@@ -1,0 +1,110 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    background-color: #0d0e11;
+    color: #f4f5f7;
+    overflow: hidden;
+  }
+}
+
+.font-mono-num {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom studio range slider */
+input[type='range'].studio-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 28px;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type='range'].studio-slider:focus {
+  outline: none;
+}
+
+input[type='range'].studio-slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 9999px;
+  background: #262a33;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+input[type='range'].studio-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  width: 18px;
+  border-radius: 9999px;
+  background: #f59e0b;
+  border: 2px solid #0d0e11;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.45), 0 2px 6px rgba(0, 0, 0, 0.5);
+  margin-top: -7px;
+  transition: transform 0.12s ease, background-color 0.12s ease;
+}
+
+input[type='range'].studio-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+  background: #fbbf24;
+}
+
+input[type='range'].studio-slider::-moz-range-track {
+  height: 5px;
+  border-radius: 9999px;
+  background: #262a33;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+input[type='range'].studio-slider::-moz-range-thumb {
+  height: 18px;
+  width: 18px;
+  border-radius: 9999px;
+  background: #f59e0b;
+  border: 2px solid #0d0e11;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.45), 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+/* Subtle custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* Safe area padding for Android/iOS notch & nav bars */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}

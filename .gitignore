@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-electron/
+release/
+
+# Capacitor native build artifacts
+android/app/build/
+android/app/src/main/assets/public/
+android/.gradle/
+android/local.properties
+android/captures/
+android/.idea/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
+npm-debug.log*
+.env
+.env.local
