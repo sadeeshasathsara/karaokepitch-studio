@@ -233,6 +233,30 @@ function startLocalMediaServer(): Promise<number> {
         return;
       }
 
+      // 3. Serve built web app from 127.0.0.1 so Chromium treats it as a Secure Context
+      //    (required for AudioWorklet / Signalsmith Stretch WASM and same-origin media)
+      const distDir = path.join(__dirname, '../dist');
+      const relPath = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '');
+      const candidate = path.resolve(distDir, relPath);
+      if (candidate.startsWith(distDir) && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        const ext = path.extname(candidate).toLowerCase();
+        const mimeMap: Record<string, string> = {
+          '.html': 'text/html; charset=utf-8',
+          '.js': 'application/javascript; charset=utf-8',
+          '.mjs': 'application/javascript; charset=utf-8',
+          '.css': 'text/css; charset=utf-8',
+          '.svg': 'image/svg+xml',
+          '.png': 'image/png',
+          '.jpg': 'image/jpeg',
+          '.ico': 'image/x-icon',
+          '.json': 'application/json',
+          '.wasm': 'application/wasm',
+        };
+        res.writeHead(200, { 'Content-Type': mimeMap[ext] || 'application/octet-stream' });
+        fs.createReadStream(candidate).pipe(res);
+        return;
+      }
+
       res.writeHead(404);
       res.end('Not found');
     });
@@ -518,7 +542,7 @@ function createWindow(): void {
   if (devUrl) {
     mainWindow.loadURL(devUrl);
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    mainWindow.loadURL(`http://127.0.0.1:${proxyPort}/`);
   }
 }
 

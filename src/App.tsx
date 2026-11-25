@@ -67,6 +67,8 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const engineRef = useRef<PitchAudioEngine | null>(null);
+  const loadSeqRef = useRef(0);
+  const isStartingRef = useRef(false);
   const settingsRef = useRef<TrackSettings>(settings);
   settingsRef.current = settings;
 
@@ -171,6 +173,8 @@ export default function App() {
   // Load and start a track on the Stage Player using the user's global settings
   const loadTrackStreams = useCallback(
     async (track: KaraokeTrack) => {
+      const seq = ++loadSeqRef.current;
+      isStartingRef.current = true;
       setIsLoadingStream(true);
       setStreamError(null);
       setIsPlaying(false);
@@ -195,6 +199,8 @@ export default function App() {
           api.getStreamBundle(track.id),
           engineRef.current.attach(audioEl),
         ]);
+
+        if (seq !== loadSeqRef.current) return;
 
         const videoEl = videoRef.current;
         if (!videoEl) return;
@@ -232,6 +238,7 @@ export default function App() {
           });
 
         await Promise.all([waitReady(videoEl), waitReady(audioEl)]);
+        if (seq !== loadSeqRef.current) return;
 
         if (Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
           setDuration(videoEl.duration);
@@ -246,12 +253,28 @@ export default function App() {
         audioEl.currentTime = targetAudio;
         videoEl.currentTime = 0;
 
-        await Promise.all([videoEl.play(), audioEl.play()]);
-        setIsPlaying(true);
+        // Play safely without treating transient AbortError as a stream failure
+        const safePlay = async (el: HTMLMediaElement) => {
+          try {
+            await el.play();
+          } catch (e) {
+            if (e instanceof DOMException && e.name === 'AbortError') return;
+            throw e;
+          }
+        };
+
+        await Promise.all([safePlay(videoEl), safePlay(audioEl)]);
+        if (seq !== loadSeqRef.current) return;
+        setIsPlaying(!videoEl.paused || !audioEl.paused);
       } catch (err) {
+        if (seq !== loadSeqRef.current) return;
+        if (err instanceof DOMException && err.name === 'AbortError') return;
         setStreamError(err instanceof Error ? err.message : 'Unable to load karaoke stream.');
       } finally {
-        setIsLoadingStream(false);
+        if (seq === loadSeqRef.current) {
+          isStartingRef.current = false;
+          setIsLoadingStream(false);
+        }
       }
     },
     [api, computeTargetAudioTime, isMuted, volume]
@@ -296,6 +319,7 @@ export default function App() {
     };
 
     const onVideoWaiting = () => {
+      if (isStartingRef.current) return;
       if (!audioEl.paused) audioEl.pause();
     };
 
