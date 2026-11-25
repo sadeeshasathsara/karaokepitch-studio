@@ -11,7 +11,7 @@
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:web && npm run build:electron",
     "dev:electron": "concurrently -k \"npm run dev\" \"wait-on http://localhost:5173 && npm run build:electron && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
-    "build:win": "npm run build && electron-builder --win --config electron-builder.yml",
+    "build:win": "npm run build && electron-builder --win --config electron-builder.yml --publish never",
     "cap:sync": "npm run build:web && cap sync android",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit"
   },

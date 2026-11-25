@@ -18,12 +18,12 @@ win:
     - target: portable
       arch:
         - x64
-  artifactName: "${productName}-${version}-win-${arch}-${target}.${ext}"
 nsis:
+  artifactName: "KaraokePitch-Studio-${version}-win-${arch}-setup.${ext}"
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: KaraokePitch Studio
 portable:
-  artifactName: "${productName}-${version}-win-${arch}-portable.${ext}"
+  artifactName: "KaraokePitch-Studio-${version}-win-${arch}-portable.${ext}"
